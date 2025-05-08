@@ -5,9 +5,9 @@
 use std::collections::BTreeMap;
 
 use proc_macro2::TokenStream;
-use quote::quote;
+use quote::{ToTokens, quote};
 use syn::{
-    Data, DeriveInput, Error, Expr, ExprLit, Fields, Ident, Index, Lit, Result,
+    Data, DeriveInput, Error, Expr, ExprLit, Fields, Ident, Index, Lit, Path, Result,
     punctuated::Punctuated, spanned::Spanned,
 };
 
@@ -15,6 +15,7 @@ fn fields_min_next(
     default_next: TokenStream,
     fields: Fields,
     container_ident: TokenStream,
+    next_path: &TokenStream,
 ) -> (TokenStream, TokenStream) {
     let fields = match fields {
         Fields::Named(fields) => fields.named,
@@ -48,7 +49,7 @@ fn fields_min_next(
         })
         .collect::<Vec<_>>();
 
-    let mut field_values = vec![quote! { ::next::Next::MIN }; field_count];
+    let mut field_values = vec![quote! { #next_path::MIN }; field_count];
 
     let min = quote! { #container_ident {
         #(#field_idents: #field_values,)*
@@ -60,7 +61,7 @@ fn fields_min_next(
 
         next = quote! { if let ::core::option::Option::Some(
             next
-        ) = ::next::Next::next(#binding) {
+        ) = #next_path::next(#binding) {
             ::core::option::Option::Some(#container_ident {
                 #(#field_idents: #field_values,)*
             })
@@ -78,6 +79,40 @@ fn derive_next_inner(input: proc_macro::TokenStream) -> Result<TokenStream> {
 
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     let ident = input.ident;
+
+    let mut path = None;
+    for attr in input.attrs {
+        if !attr.path().is_ident("next") {
+            continue;
+        }
+
+        attr.parse_nested_meta(|meta| {
+            let Some(ident) = meta.path.get_ident() else {
+                return Err(meta.error("path must be an identifier"));
+            };
+
+            match ident.to_string().as_str() {
+                "path" => {
+                    if path.is_some() {
+                        return Err(meta.error("duplicate `path` attribute"));
+                    }
+
+                    path = Some(meta.value()?.parse::<Path>()?);
+                }
+                attr => {
+                    return Err(meta.error(format!("`{attr}` isn't a valid attribute for `next`")));
+                }
+            }
+
+            Ok(())
+        })?;
+    }
+
+    let path = if let Some(path) = path {
+        path.into_token_stream()
+    } else {
+        quote! { ::next::Next }
+    };
 
     let (min, next) = match input.data {
         Data::Struct(data) => {
@@ -104,6 +139,7 @@ fn derive_next_inner(input: proc_macro::TokenStream) -> Result<TokenStream> {
                 quote! { ::core::option::Option::None },
                 data.fields,
                 quote! { Self },
+                &path,
             );
 
             (
@@ -196,6 +232,7 @@ fn derive_next_inner(input: proc_macro::TokenStream) -> Result<TokenStream> {
                         },
                         fields,
                         quote! { Self::#ident },
+                        &path,
                     );
                     last_min = Some(min);
                     next
@@ -226,7 +263,7 @@ fn derive_next_inner(input: proc_macro::TokenStream) -> Result<TokenStream> {
     Ok(quote! {
         #[automatically_derived]
         #[allow(non_shorthand_field_patterns)]
-        impl #impl_generics ::next::Next for #ident #ty_generics #where_clause {
+        impl #impl_generics #path for #ident #ty_generics #where_clause {
             const MIN: Self = #min;
 
             fn next(self) -> ::core::option::Option<Self> {
@@ -237,7 +274,7 @@ fn derive_next_inner(input: proc_macro::TokenStream) -> Result<TokenStream> {
 }
 
 /// Allows getting the next sequential value
-#[proc_macro_derive(Next)]
+#[proc_macro_derive(Next, attributes(next))]
 pub fn derive_next(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     derive_next_inner(input)
         .unwrap_or_else(Error::into_compile_error)

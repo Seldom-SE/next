@@ -4,8 +4,13 @@ use next::Next;
 
 #[test]
 fn next_enum() {
-    #[derive(Next, PartialEq, Debug)]
+    mod next_module {
+        pub use next::Next;
+    }
+
     #[repr(u8)]
+    #[derive(Next, PartialEq, Debug)]
+    #[next(path = next_module::Next)]
     enum Foo {
         C { first: f32, second: u8 } = 2,
         A = 0,
